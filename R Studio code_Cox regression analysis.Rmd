@@ -1,0 +1,398 @@
+---
+title: "Master Thesis: Effect of Number of partners on International Joint Ventures Survival: the moderating role of Environmental Dynamism & Technology Transfer"
+output:
+  html_document:
+    df_print: paged
+    theme: united
+    highlight: textmate
+  word_document: default
+  pdf_document: default
+---
+
+1. Importing necessary libraries
+
+```{r, eval=FALSE}
+# Install and load necessary packages
+if (!require("tidyverse")) install.packages("tidyverse", dependencies=TRUE)
+if (!require("survival")) install.packages("survival", dependencies=TRUE)
+if (!require("caret")) install.packages("caret", dependencies=TRUE)
+if (!require("ggplot2")) install.packages("ggplot2", dependencies=TRUE)
+if (!require("readr")) install.packages("readr", dependencies=TRUE)
+if (!require("stargazer")) install.packages("stargazer", dependencies=TRUE)
+if (!require("car")) install.packages("car", dependencies=TRUE)
+if (!require("psych")) install.packages("psych", dependencies=TRUE)
+if (!require("dplyr")) install.packages("dplyr", dependencies=TRUE)
+if (!require("tidyr")) install.packages("tidyr", dependencies=TRUE)
+if (!require("flextable")) install.packages("flextable", dependencies=TRUE)
+if (!require("officer")) install.packages("officer", dependencies=TRUE)
+if (!require("survminer")) install.packages("survminer", dependencies=TRUE)
+if (!require("htmlwidgets")) install.packages("htmlwidgets", dependencies=TRUE)
+if (!require("scales")) install.packages("scales", dependencies=TRUE)
+
+# Load required libraries
+library(tidyverse)
+library(survival)
+library(caret)
+library(ggplot2)
+library(readr)
+library(stargazer)
+library(car)
+library(psych)
+library(dplyr)
+library(tidyr)
+library(flextable)
+library(officer)
+library("survminer")
+library("htmlwidgets")
+library(scales)
+```
+
+2. View citation of the survival package used in "R"
+
+```{r, eval=FALSE}
+# Citation and package version of survival package
+citation("survival")
+packageVersion("survival")
+```
+
+3. Read & View source file from the directory 
+
+```{r, eval=FALSE}
+
+df <- read_csv("IJV_Sample_Cox_Model.csv") #Replace the source file path name & file name.
+
+# View the DataFrame
+print(head(df))
+
+# Drop the "Deal Name" column
+df <- df %>% 
+  select(-'Deal Name')
+
+# View the DataFrame after dropping the column
+print(head(df))
+```
+
+4. Prepare the data by converting variables to appropriate formats for analysis
+
+```{r, eval=FALSE}
+# Prepare Data for Analysis
+df <- df %>%
+  mutate(termination = as.numeric(termination),
+         number_of_partners = as.numeric(number_of_participants),
+         technology_transfer = as.numeric(technology_transfer),
+         ijv_scope = as.numeric(ijv_scope),
+         industry_relatedness = as.numeric(industry_relatedness),
+         start_year = as.factor(start_year),
+         industry_sic = as.factor(industry_sic),
+         ijv_age = as.numeric(ijv_age),
+         partner_countries = as.numeric(partner_countries))
+```
+
+5. Normalize numeric variables to improve model performance
+
+```{r, eval=FALSE}
+
+# Normalize numeric variables
+numeric_vars <- c("environmental_dynamism", "cultural_distance", "gdp_difference")
+preProcValues <- preProcess(df[numeric_vars], method = c("center", "scale"))
+df[numeric_vars] <- predict(preProcValues, df[numeric_vars])
+```
+
+6. Outlier detection and handling
+
+```{r, eval=FALSE}
+
+# Check for outliers
+outliers <- df %>%
+  select(numeric_vars) %>%
+  gather(key = "variable", value = "value") %>%
+  group_by(variable) %>%
+  mutate(outlier = ifelse(value < quantile(value, 0.25) - 1.5 * IQR(value) | 
+                            value > quantile(value, 0.75) + 1.5 * IQR(value), TRUE, FALSE))
+
+# Plot outliers before handling
+options(warn= 0)
+ggplot(outliers, aes(x = variable, y = value)) +
+  geom_boxplot() +
+  geom_jitter(aes(color = outlier), width = 0.2) +
+  theme_minimal()
+
+# Handle outliers by capping them at the 5th and 95th percentiles
+for (var in numeric_vars) {
+  lower_bound <- quantile(df[[var]], 0.05)
+  upper_bound <- quantile(df[[var]], 0.95)
+  df[[var]] <- ifelse(df[[var]] < lower_bound, lower_bound, df[[var]])
+  df[[var]] <- ifelse(df[[var]] > upper_bound, upper_bound, df[[var]])
+}
+
+# Check for outliers again after handling
+outliers_handled <- df %>%
+  select(numeric_vars) %>%
+  gather(key = "variable", value = "value") %>%
+  group_by(variable) %>%
+  mutate(outlier = ifelse(value < quantile(value, 0.25) - 1.5 * IQR(value) | 
+                            value > quantile(value, 0.75) + 1.5 * IQR(value), TRUE, FALSE))
+
+# Plot outliers after handling
+ggplot(outliers_handled, aes(x = variable, y = value)) +
+  geom_boxplot() +
+  geom_jitter(aes(color = outlier), width = 0.2) +
+  theme_minimal() +
+  labs(title = "Outliers in Numeric Variables (After Handling)", x = "Variable", y = "Value")
+```
+
+7. Generate Descriptive Statistics & Correlation Matrix
+
+```{r, eval=FALSE}
+
+# Descriptive stats and correlation matrix
+# Define the variables for the correlation matrix
+vars_for_corr <- c("termination","ijv_age","number_of_partners", "environmental_dynamism",
+                   "technology_transfer", "cultural_distance", "gdp_difference",
+                   "ijv_scope", "industry_relatedness", "partner_countries")
+
+# Calculate means and standard deviations and round to 3 digits
+means <- round(colMeans(df[vars_for_corr], na.rm = TRUE), 3)
+sds <- round(apply(df[vars_for_corr], 2, sd, na.rm = TRUE), 3)
+
+# Calculate correlation matrix with significance levels
+correlation_results <- corr.test(df[vars_for_corr], use = "pairwise.complete.obs", method = "pearson")
+
+# Extract the correlation matrix and p-values
+cor_matrix <- correlation_results$r
+p_values <- correlation_results$p
+
+# Create a data frame for means and standard deviations
+summary_stats <- data.frame(Serial = 1:length(vars_for_corr),Variable = vars_for_corr, Mean = means, SD = sds)
+
+# Prepare the correlation matrix with significance levels
+stars <- symnum(p_values, cutpoints = c(0, 0.001, 0.01, 0.05, 1), symbols = c("***", "**", "*", ""))
+cor_matrix_with_stars <- cor_matrix
+for (i in seq_len(ncol(cor_matrix))) {
+  for (j in seq_len(nrow(cor_matrix))) {
+    cor_matrix_with_stars[i, j] <- paste0(formatC(cor_matrix[i, j], format = "f", digits = 2), " ", stars[i, j])
+  }
+}
+
+# Convert the matrix to a data frame for better display
+cor_matrix_df <- as.data.frame(cor_matrix_with_stars)
+colnames(cor_matrix_df) <- vars_for_corr
+rownames(cor_matrix_df) <- vars_for_corr
+
+# Combine the summary statistics and correlation matrix
+combined_results <- summary_stats %>%
+  bind_cols(cor_matrix_df)
+
+# Create a flextable object with header labels
+ft <- flextable(combined_results) %>%
+  set_header_labels(Serial = "S.No",
+                    Variable = "Variable", 
+                    Mean = "Mean", 
+                    SD = "SD", 
+                    termination = "1",
+                    ijv_age = "2",
+                    number_of_partners = "3",
+                    environmental_dynamism = "4",
+                    technology_transfer = "5",
+                    cultural_distance = "6",
+                    gdp_difference = "7",
+                    ijv_scope = "8",
+                    industry_relatedness = "9",
+                    partner_countries = "10") %>%
+  add_header_row(values = c("S.No", "Variable", "Mean", "SD", "Correlation Matrix"), colwidths = c(1, 1, 1, 1, length(vars_for_corr))) %>%
+  add_footer_lines(values = "Note: *** p < 0.001, ** p < 0.01, * p < 0.05") %>%
+  autofit()
+
+# View the flextable in RStudio viewer
+ft
+```
+
+8. Perform Variation Inflation Factors (VIF) test to check for multicollinearity among covariates
+
+```{r, eval=FALSE}
+
+# Define a formula for VIF calculation with only independent variables, moderators, and controls
+formula_vif <- as.formula("termination ~ number_of_partners + technology_transfer + environmental_dynamism + cultural_distance + gdp_difference + ijv_scope + industry_relatedness + partner_countries")
+linear_model <- lm(formula_vif, data = df)
+
+# Calculate VIF
+vif_results <- vif(linear_model)
+vif_results
+
+# Round VIF values to 3 digits
+vif_results <- round(vif_results, 3)
+vif_results
+
+# Create a data frame for VIF values
+vif_table <- data.frame(Variable = names(vif_results), VIF = vif_results)
+
+# Reorder the data frame to have independent variables and moderators at the start
+independent_vars <- c("number_of_partners", "technology_transfer", "environmental_dynamism")
+control_vars <- c("cultural_distance", "gdp_difference", "ijv_scope", "industry_relatedness","partner
+                  _countries")
+vif_table <- vif_table %>%
+  mutate(Order = match(Variable, c(independent_vars, control_vars))) %>%
+  arrange(Order) %>%
+  select(-Order)
+
+# Create a flextable object and rename columns
+ft_vif <- flextable(vif_table) %>%
+  set_header_labels(Variable = "Variable", VIF = "VIF") %>%
+  autofit()
+
+# Optional: Print the table to view it in RStudio viewer
+ft_vif
+```
+
+9. To verify whether Cox Proportional Hazard assumptions hold for covariates, Schoenfeld Global test is conducted.
+
+```{r, eval=TRUE}
+
+# Check for Cox proportional hazards (PH) model assumptions without including fixed effects
+# Model for Hypothesis 1 (excluding fixed effects)
+model_h1 <- coxph(Surv(time = ijv_age, event = termination) ~ 
+                           number_of_participants*environmental_dynamism +
+                           cultural_distance + gdp_difference + 
+                           ijv_scope + industry_relatedness + partner_countries, 
+                         data = df)
+# Model for Hypothesis 2 (excluding fixed effects)
+model_h2 <- coxph(Surv(time = ijv_age, event = termination) ~ 
+                           number_of_participants * technology_transfer +
+                           cultural_distance + gdp_difference + 
+                           ijv_scope + industry_relatedness + partner_countries, 
+                         data = df)
+
+# Check PH assumption for Hypothesis 1
+ph_test_h1 <- cox.zph(model_h1)
+print(ph_test_h1)
+plot(ph_test_h1)
+print(names(ph_test_h1))
+ggcoxzph(ph_test_h1)
+
+# Plotting graph for EVD covariate (included in Thesis document)
+ggcoxzph(ph_test_h1, resid = TRUE, se = TRUE, df = 4, var = 2,font.main = 20, point.size = 4, point.col = "blue",ggtheme =
+  theme(
+    text = element_text(family = "Times New Roman", size = 20),  # Set font to Times New Roman
+    plot.title = element_text(family = "Times New Roman", size = 20),
+    axis.title = element_text(family = "Times New Roman", size = 20),
+    axis.text = element_text(family = "Times New Roman", size = 20)
+  ))
+
+# Check PH assumption for Hypothesis 2
+ph_test_h2 <- cox.zph(model_h2)
+print(ph_test_h2)
+plot(ph_test_h2)
+print(names(ph_test_h2))
+ggcoxzph(ph_test_h2)
+```
+
+10. Perform Cox regression analysis for testing Hypothesis 1 & 2
+
+```{r, eval=FALSE}
+
+# Perform Cox regression with fixed effects
+# Model 1
+cox_model_h1 <- coxph(Surv(ijv_age, termination) ~ number_of_partners*environmental_dynamism + 
+                        cultural_distance + gdp_difference + 
+                        ijv_scope + industry_relatedness + partner_countries + factor(industry_sic) + 
+                        factor(start_year),
+                        data = df)
+
+# Model 2
+cox_model_h2 <- coxph(Surv(ijv_age, termination) ~ 
+                        number_of_partners*technology_transfer +
+                        cultural_distance + gdp_difference + 
+                        ijv_scope  + industry_relatedness  + partner_countries + factor(industry_sic) + 
+                        factor(start_year),
+                      data = df)
+
+# Setting max.print to a high value
+options(max.print = 500000)
+
+# Summarize the models
+summary_H1 <- summary(cox_model_h1)
+summary_H1
+summary_H2 <- summary(cox_model_h2)
+summary_H2
+
+# Export the results using stargazer, for quick interpretation and structured overview
+stargazer(cox_model_h1, cox_model_h2, type = "text",
+          title = "Cox Regression Results",
+          dep.var.labels = c("Proportional Hazard Model:Termination = 1"),
+          covariate.labels = c("Number of Participants", "Environmental Dynamism", "Technology Transfer", 
+                               "Cultural Distance", "GDP Difference", "IJV Scope", 
+                               "Industry Relatedness", "Partner Countries", "Industry SIC", "Start Year"),
+          omit.stat = c("wald", "lr"),
+          out = "cox_regression_results.html")
+
+```
+
+11. Plotting survival curves to visualise the interaction effect defined in Hypothesis 1 & 2.
+
+```{r, eval=FALSE}
+
+# Define a custom theme for formatting the visuals
+custom_theme <- theme_minimal() +
+  theme(
+    text = element_text(family = "Times", size = 114),
+    plot.title = element_text(size = 14, face = "bold"),
+    plot.subtitle = element_text(size = 14),
+    axis.title = element_text(size = 14, face = "bold"),
+    axis.text = element_text(size = 12),
+    legend.title = element_text(size = 14,face = "bold"),
+    legend.text = element_text(size = 12),
+    plot.background = element_rect(fill = "white"),
+    panel.grid = element_line(color = "grey80", linewidth = 0.1),
+    panel.grid.minor = element_blank(),
+    legend.position = "bottom" 
+  )
+
+# Survival Plot for Hypothesis 1: Interaction between Number of partners & Environemntal dynamism
+# Convert to survival probabilities (assuming 1 - mean_event gives survival probability)
+interaction_h1 <- df %>% 
+  mutate(predicted_event = predict(cox_model_h1, type = "expected")) %>%
+  group_by(number_of_participants, environmental_dynamism) %>%
+  summarise(mean_event = mean(predicted_event),.groups = 'drop') %>%
+  mutate(mean_survival_prob = exp(-mean_event) * 100)  # Convert to percentage
+
+# Plot with improved clarity and color scheme
+ggplot(interaction_h1, aes(x = as.numeric(number_of_participants), y = mean_survival_prob, color = environmental_dynamism)) +
+  geom_line() +
+  scale_color_gradient2(low = "red", mid = "blue", high = "green", midpoint = median(df$environmental_dynamism), space = "Lab", na.value = "grey50")  +
+  labs(
+    x = "Number of Partners",
+    y = "Mean Survival Probability (%)",
+    color = "Environmental Dynamism Index") +
+  custom_theme
+
+# Survival Plot for Hypothesis 1: Interaction between Number of partners & Technology Transfer
+interaction_h2 <- df %>% 
+  mutate(predicted_event = predict(cox_model_h2, type = "expected")) %>%
+  group_by(number_of_participants, technology_transfer) %>%
+  summarise(mean_event = mean(predicted_event),.groups = 'drop')
+
+# Convert to survival probabilities (assuming 1 - mean_event gives survival probability)
+interaction_h2 <- interaction_h2 %>% 
+  #mutate(mean_survival_prob = (1 - mean_event) * 100)  # Convert to percentage
+  mutate(mean_survival_prob = exp(-mean_event) * 100)
+
+# Plot with improved clarity and color scheme
+ggplot(interaction_h2, aes(x = as.numeric(number_of_participants), y = mean_survival_prob, color = factor(technology_transfer))) +
+  geom_line(linewidth = 0.5) +  # Use linewidth instead of size
+  geom_point(size = 1) +
+  scale_color_manual(values = c("1" = "green", "0" = "blue")) +
+  labs(
+    x = "Number of Partners",
+    y = "Mean Survival Probability (%)",
+    color = "Technology Transfer" ) +
+  custom_theme
+```
+
+
+                      
+
+
+
+
+
+
